@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback, ChangeEvent } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "../lib/supabase";
 
 /* ══════════════════════════════════════════════════════
    TYPES
@@ -12,7 +14,7 @@ type ModalType    = "add" | "edit" | "remind" | "history" | null;
 
 interface Payment {
   id: string;
-  date: string;       // ISO date string
+  date: string;
   amount: number;
   note: string;
 }
@@ -42,10 +44,6 @@ type FormData = {
 /* ══════════════════════════════════════════════════════
    CONSTANTS
 ══════════════════════════════════════════════════════ */
-const CYCLE_DAYS: Record<BillingCycle, number> = {
-  weekly: 7, monthly: 30, quarterly: 90, yearly: 365,
-};
-
 const CYCLE_LABEL: Record<BillingCycle, string> = {
   weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly",
 };
@@ -62,27 +60,6 @@ const EMPTY: FormData = {
 };
 
 const todayStr = () => new Date().toISOString().split("T")[0];
-
-/* ══════════════════════════════════════════════════════
-   SEED DATA
-══════════════════════════════════════════════════════ */
-const makeSeed = (): Customer[] => {
-  const t = new Date();
-  const d = (offset: number) => {
-    const x = new Date(t);
-    x.setDate(x.getDate() + offset);
-    return x.toISOString().split("T")[0];
-  };
-  return [
-    { id:"1", name:"Sharma Medicals",  phone:"9876543210", amount:18000, billingCycle:"monthly",   lastPaymentDate: d(-35), nextDueDate: d(-5),  status:"overdue",  note:"Medicine supply",   paymentHistory:[{ id:"p1", date:d(-65), amount:18000, note:"" }] },
-    { id:"2", name:"Ritu Coaching",    phone:"9823456789", amount:6500,  billingCycle:"monthly",   lastPaymentDate: d(-28), nextDueDate: d(2),   status:"upcoming", note:"April batch fees",  paymentHistory:[{ id:"p2", date:d(-58), amount:6500,  note:"" }] },
-    { id:"3", name:"Patel Hardware",   phone:"9712345678", amount:31200, billingCycle:"quarterly", lastPaymentDate: d(-95), nextDueDate: d(-5),  status:"overdue",  note:"Bulk order",        paymentHistory:[] },
-    { id:"4", name:"Arjun Traders",    phone:"9988776655", amount:9800,  billingCycle:"monthly",   lastPaymentDate: d(-20), nextDueDate: d(10),  status:"pending",  note:"",                  paymentHistory:[] },
-    { id:"5", name:"Neha Beauty",      phone:"9765432100", amount:4200,  billingCycle:"monthly",   lastPaymentDate: d(-2),  nextDueDate: d(28),  status:"paid",     note:"Monthly membership", paymentHistory:[{ id:"p5", date:d(-2), amount:4200, note:"" }] },
-    { id:"6", name:"Raj Gym",          phone:"9654321098", amount:2500,  billingCycle:"monthly",   lastPaymentDate: d(-30), nextDueDate: d(0),   status:"upcoming", note:"Monthly fee",       paymentHistory:[] },
-    { id:"7", name:"Sinha Tuition",    phone:"9543210987", amount:3500,  billingCycle:"monthly",   lastPaymentDate: d(-28), nextDueDate: d(15),  status:"pending",  note:"",                  paymentHistory:[] },
-  ];
-};
 
 /* ══════════════════════════════════════════════════════
    PURE HELPERS
@@ -104,7 +81,7 @@ const addCycleDays = (dateStr: string, cycle: BillingCycle): string => {
     const months = cycle === "monthly" ? 1 : cycle === "quarterly" ? 3 : 12;
     d.setMonth(d.getMonth() + months);
   } else {
-    d.setDate(d.getDate() + CYCLE_DAYS[cycle]);
+    d.setDate(d.getDate() + 7);
   }
   return d.toISOString().split("T")[0];
 };
@@ -124,6 +101,23 @@ const buildReminderMsg = (c: Customer): string => {
 
 const waLink = (phone: string, msg: string) =>
   `https://wa.me/91${phone.replace(/\D/g,"")}?text=${encodeURIComponent(msg)}`;
+
+/* ══════════════════════════════════════════════════════
+   DB HELPERS — map between app types and Supabase rows
+══════════════════════════════════════════════════════ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const rowToCustomer = (row: any): Customer => ({
+  id:               row.id,
+  name:             row.name,
+  phone:            row.phone,
+  amount:           Number(row.amount),
+  billingCycle:     row.billing_cycle as BillingCycle,
+  lastPaymentDate:  row.last_payment_date ?? null,
+  nextDueDate:      row.next_due_date,
+  status:           calcStatus(row.next_due_date),
+  note:             row.note ?? "",
+  paymentHistory:   Array.isArray(row.payment_history) ? row.payment_history : [],
+});
 
 /* ══════════════════════════════════════════════════════
    FORM FIELD — outside Dashboard to prevent remount bug
@@ -151,6 +145,22 @@ function FormField({ label, fieldKey, type="text", placeholder="", value, error,
           value={value}
           placeholder={placeholder}
           onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(fieldKey, e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === "ArrowDown") {
+              e.preventDefault();
+              const inputs = document.querySelectorAll("input, select");
+              const arr = Array.from(inputs);
+              const idx = arr.indexOf(e.target as Element);
+              if (idx < arr.length - 1) (arr[idx + 1] as HTMLElement).focus();
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              const inputs = document.querySelectorAll("input, select");
+              const arr = Array.from(inputs);
+              const idx = arr.indexOf(e.target as Element);
+              if (idx > 0) (arr[idx - 1] as HTMLElement).focus();
+            }
+          }}
           style={{
             width:"100%", padding:"11px 13px",
             background:"rgba(255,255,255,.05)",
@@ -177,7 +187,8 @@ function SortArrow({ active, asc }: { active: boolean; asc: boolean }) {
 ══════════════════════════════════════════════════════ */
 export default function Dashboard() {
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [hydrated,  setHydrated]  = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loading,   setLoading]   = useState(true);
   const [search,    setSearch]    = useState("");
   const [filter,    setFilter]    = useState<Status | "all">("all");
   const [modal,     setModal]     = useState<ModalType>(null);
@@ -188,28 +199,31 @@ export default function Dashboard() {
   const [sortKey,   setSortKey]   = useState<SortKey>(null);
   const [sortAsc,   setSortAsc]   = useState(true);
   const [tab,       setTab]       = useState<"all"|"overdue"|"upcoming">("all");
+  const router = useRouter();
 
-  /* ── hydration + localStorage ── */
+  /* ── auth check ── */
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("cp_customers_v2");
-      setCustomers(saved ? JSON.parse(saved) : makeSeed());
-    } catch { setCustomers(makeSeed()); }
-    setHydrated(true);
+    const supabase = createClient();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) router.push("/login");
+      else setAuthChecked(true);
+    });
   }, []);
 
+  /* ── load customers from Supabase ── */
   useEffect(() => {
-    const logged = localStorage.getItem("isLoggedIn");
-    if (!logged) {
-      window.location.href = "/login";
-    }
-  }, []);
-
-  useEffect(() => {
-    if (hydrated) {
-      try { localStorage.setItem("cp_customers_v2", JSON.stringify(customers)); } catch {}
-    }
-  }, [customers, hydrated]);
+    if (!authChecked) return;
+    const supabase = createClient();
+    supabase
+      .from("customers")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (error) { console.error(error); setLoading(false); return; }
+        setCustomers((data ?? []).map(rowToCustomer));
+        setLoading(false);
+      });
+  }, [authChecked]);
 
   /* ── auto-refresh statuses ── */
   const refreshStatuses = useCallback(() => {
@@ -274,40 +288,59 @@ export default function Dashboard() {
   /* ── validate ── */
   const validate = (): boolean => {
     const e: Partial<FormData> = {};
-    if (!form.name.trim())                                                      e.name       = "Name is required";
-    if (!form.phone.trim() || !/^\d{10}$/.test(form.phone.replace(/\s/g,""))) e.phone      = "Enter valid 10-digit number";
-    if (!form.amount || isNaN(+form.amount) || +form.amount<=0)                e.amount     = "Enter a valid amount";
+    if (!form.name.trim())                                                      e.name        = "Name is required";
+    if (!form.phone.trim() || !/^\d{10}$/.test(form.phone.replace(/\s/g,""))) e.phone       = "Enter valid 10-digit number";
+    if (!form.amount || isNaN(+form.amount) || +form.amount<=0)                e.amount      = "Enter a valid amount";
     if (!form.nextDueDate)                                                      e.nextDueDate = "Due date is required";
     setErrors(e);
     return Object.keys(e).length===0;
   };
 
   /* ── close modal ── */
-  const closeModal = () => { setModal(null); setActive(null); setForm(EMPTY); setErrors({}); };
+  const closeModal = () => { 
+    setModal(null); 
+    setActive(null); 
+    setErrors({}); 
+  };
+
+  const closeModalAndReset = () => {
+    setModal(null);
+    setActive(null);
+    setForm(EMPTY);
+    setErrors({});
+  };
 
   /* ── open add ── */
-  const openAdd = () => { setForm(EMPTY); setErrors({}); setModal("add"); };
+  const openAdd = () => { setErrors({}); setModal("add"); };
 
   /* ── add customer ── */
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!validate()) return;
     if (customers.some(c => c.phone===form.phone.trim())) {
       setErrors(p => ({ ...p, phone:"A customer with this number already exists" }));
       return;
     }
-    setCustomers(prev => [{
-      id: uid(),
-      name: form.name.trim(),
-      phone: form.phone.trim(),
-      amount: +form.amount,
-      billingCycle: form.billingCycle,
-      lastPaymentDate: null,
-      nextDueDate: form.nextDueDate,
-      status: calcStatus(form.nextDueDate),
-      note: form.note.trim(),
-      paymentHistory: [],
-    }, ...prev]);
-    closeModal();
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    
+
+    const { data, error } = await supabase.from("customers").insert({
+      user_id:           user.id,
+      name:              form.name.trim(),
+      phone:             form.phone.trim(),
+      amount:            +form.amount,
+      billing_cycle:     form.billingCycle,
+      last_payment_date: null,
+      next_due_date:     form.nextDueDate,
+      status:            calcStatus(form.nextDueDate),
+      note:              form.note.trim(),
+      payment_history:   [],
+    }).select().single();
+
+    if (error) { showToast("Failed to add customer", "error"); return; }
+    setCustomers(prev => [rowToCustomer(data), ...prev]);
+    closeModalAndReset();
     showToast("Customer added ✓");
   };
 
@@ -320,74 +353,101 @@ export default function Dashboard() {
   };
 
   /* ── save edit ── */
-  const handleEdit = () => {
+  const handleEdit = async () => {
     if (!validate() || !active) return;
     if (customers.some(c => c.phone===form.phone.trim() && c.id!==active.id)) {
       setErrors(p => ({ ...p, phone:"Another customer has this number" }));
       return;
     }
+    const supabase = createClient();
+    const { error } = await supabase.from("customers").update({
+      name:          form.name.trim(),
+      phone:         form.phone.trim(),
+      amount:        +form.amount,
+      billing_cycle: form.billingCycle,
+      next_due_date: form.nextDueDate,
+      note:          form.note.trim(),
+      status:        active.status==="paid" ? "paid" : calcStatus(form.nextDueDate),
+    }).eq("id", active.id);
+
+    if (error) { showToast("Failed to update customer", "error"); return; }
     setCustomers(prev => prev.map(c => c.id!==active.id ? c : {
       ...c,
-      name: form.name.trim(),
-      phone: form.phone.trim(),
-      amount: +form.amount,
-      billingCycle: form.billingCycle,
-      nextDueDate: form.nextDueDate,
-      note: form.note.trim(),
-      status: c.status==="paid" ? "paid" : calcStatus(form.nextDueDate),
+      name:          form.name.trim(),
+      phone:         form.phone.trim(),
+      amount:        +form.amount,
+      billingCycle:  form.billingCycle,
+      nextDueDate:   form.nextDueDate,
+      note:          form.note.trim(),
+      status:        c.status==="paid" ? "paid" : calcStatus(form.nextDueDate),
     }));
-    closeModal();
+    closeModalAndReset();
     showToast("Customer updated ✓");
   };
 
-  /* ── mark paid — core recurring logic ── */
-  const markPaid = (id: string) => {
-    const today = todayStr();
-    setCustomers(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      const nextDue = addCycleDays(today, c.billingCycle);
-      const newPayment: Payment = { id:uid(), date:today, amount:c.amount, note:"" };
-      return {
-        ...c,
-        status: "paid",
-        lastPaymentDate: today,
-        nextDueDate: nextDue,
-        paymentHistory: [newPayment, ...c.paymentHistory],
-      };
+  /* ── mark paid ── */
+  const markPaid = async (id: string) => {
+    const c = customers.find(x => x.id===id);
+    if (!c) return;
+    const today   = todayStr();
+    const nextDue = addCycleDays(today, c.billingCycle);
+    const newPayment: Payment = { id:uid(), date:today, amount:c.amount, note:"" };
+    const newHistory = [newPayment, ...c.paymentHistory];
+
+    const supabase = createClient();
+    const { error } = await supabase.from("customers").update({
+      status:            "paid",
+      last_payment_date: today,
+      next_due_date:     nextDue,
+      payment_history:   newHistory,
+    }).eq("id", id);
+
+    if (error) { showToast("Failed to update", "error"); return; }
+    setCustomers(prev => prev.map(x => x.id!==id ? x : {
+      ...x, status:"paid", lastPaymentDate:today, nextDueDate:nextDue, paymentHistory:newHistory,
     }));
     showToast("Marked as paid — next due date updated ✓");
   };
 
   /* ── undo paid ── */
-  const undoPaid = (id: string) => {
-    setCustomers(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      // remove last payment, restore previous due date
-      const history = [...c.paymentHistory];
-      history.shift();
-      const prevDue = history.length > 0
-        ? addCycleDays(history[0].date, c.billingCycle)
-        : c.nextDueDate;
-      return {
-        ...c,
-        status: calcStatus(prevDue),
-        lastPaymentDate: history.length > 0 ? history[0].date : null,
-        nextDueDate: prevDue,
-        paymentHistory: history,
-      };
+  const undoPaid = async (id: string) => {
+    const c = customers.find(x => x.id===id);
+    if (!c) return;
+    const history  = c.paymentHistory.slice(1);
+    const prevDue  = history.length > 0 ? addCycleDays(history[0].date, c.billingCycle) : c.nextDueDate;
+    const newStatus = calcStatus(prevDue);
+
+    const supabase = createClient();
+    const { error } = await supabase.from("customers").update({
+      status:            newStatus,
+      last_payment_date: history.length > 0 ? history[0].date : null,
+      next_due_date:     prevDue,
+      payment_history:   history,
+    }).eq("id", id);
+
+    if (error) { showToast("Failed to undo", "error"); return; }
+    setCustomers(prev => prev.map(x => x.id!==id ? x : {
+      ...x, status:newStatus, lastPaymentDate: history.length>0?history[0].date:null,
+      nextDueDate:prevDue, paymentHistory:history,
     }));
     showToast("Payment undone ✓");
   };
 
   /* ── delete ── */
-  const deleteCustomer = (id: string) => {
+  const deleteCustomer = async (id: string) => {
+    const supabase = createClient();
+    const { error } = await supabase.from("customers").delete().eq("id", id);
+    if (error) { showToast("Failed to delete", "error"); return; }
     setCustomers(prev => prev.filter(c => c.id!==id));
     showToast("Customer removed");
   };
 
-  /* ── remind ── */
+  /* ── remind / history ── */
   const openRemind  = (c: Customer) => { setActive(c); setModal("remind"); };
   const openHistory = (c: Customer) => { setActive(c); setModal("history"); };
+
+  /* ── early return after all hooks ── */
+  if (!authChecked) return null;
 
   /* ══════════════════════════════════════════════════════
      RENDER
@@ -402,6 +462,7 @@ export default function Dashboard() {
         @keyframes slideUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
         @keyframes toastIn { from{opacity:0;transform:translateX(16px)} to{opacity:1;transform:translateX(0)} }
         @keyframes pulse   { 0%,100%{opacity:1} 50%{opacity:.4} }
+        @keyframes spin    { to{transform:rotate(360deg)} }
 
         input::placeholder, textarea::placeholder { color:rgba(236,236,236,.22); }
         input:focus, textarea:focus, select:focus { outline:none; }
@@ -474,7 +535,6 @@ export default function Dashboard() {
         </div>
 
         <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-          {/* overdue badge */}
           {overdueList.length > 0 && (
             <div style={{
               display:"flex", alignItems:"center", gap:6,
@@ -501,9 +561,10 @@ export default function Dashboard() {
             + Add Customer
           </button>
           <button
-            onClick={() => {
-              localStorage.removeItem("isLoggedIn");
-              window.location.href = "/login";
+            onClick={async () => {
+              const supabase = createClient();
+              await supabase.auth.signOut();
+              router.push("/login");
             }}
             style={{
               background:"transparent", color:"#ececec", border:"1px solid rgba(236,236,236,.16)",
@@ -522,357 +583,283 @@ export default function Dashboard() {
 
       <div style={{ maxWidth:1280, margin:"0 auto", padding:"40px 48px" }}>
 
-        {/* ══ STAT CARDS ══ */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:12, marginBottom:28 }}>
-          {([
-            { label:"Total Pending",    value:fmt(totalPend),              sub:`${unpaidList.length} customers`, accent:false, red:false, purple:false },
-            { label:"Recovered",        value:fmt(totalRecov),             sub:"collected",                      accent:true,  red:false, purple:false },
-            { label:"Overdue",          value:String(overdueList.length),  sub:"action needed",                  accent:false, red:true,  purple:false },
-            { label:"Upcoming",         value:String(upcomingList.length), sub:"due within 3 days",              accent:false, red:false, purple:true  },
-            { label:"Total Customers",  value:String(customers.length),    sub:"in system",                      accent:false, red:false, purple:false },
-          ] as const).map((s,i) => (
-            <div key={i} style={{
-              padding:"20px 20px 16px",
-              border: s.accent   ? "1px solid rgba(200,245,90,.18)"
-                    : s.red      ? "1px solid rgba(248,113,113,.15)"
-                    : s.purple   ? "1px solid rgba(99,102,241,.2)"
-                    : "1px solid rgba(236,236,236,.07)",
-              background: s.accent  ? "rgba(200,245,90,.04)"
-                        : s.red     ? "rgba(248,113,113,.04)"
-                        : s.purple  ? "rgba(99,102,241,.04)"
-                        : "rgba(255,255,255,.02)",
-              borderRadius:4,
-              animation:`slideUp .4s ease ${i*.06}s both`,
-            }}>
-              <p style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.28)", marginBottom:10 }}>{s.label}</p>
-              <p style={{ fontSize:30, fontWeight:300, letterSpacing:"-0.03em", lineHeight:1, marginBottom:6,
-                color: s.accent?"#c8f55a" : s.red?"#f87171" : s.purple?"#818cf8" : "#ececec" }}>
-                {s.value}
-              </p>
-              <p style={{ fontSize:11, color:"rgba(236,236,236,.22)" }}>{s.sub}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* ══ RECOVERY BAR ══ */}
-        <div className="section-card" style={{ marginBottom:20 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-            <p style={{ fontSize:11, letterSpacing:".08em", textTransform:"uppercase", color:"rgba(236,236,236,.28)" }}>Recovery Rate</p>
-            <p style={{ fontSize:13, fontWeight:500, color:"#c8f55a" }}>{recovPct}%</p>
-          </div>
-          <div style={{ height:5, background:"rgba(236,236,236,.07)", borderRadius:3, overflow:"hidden" }}>
+        {/* ══ LOADING ══ */}
+        {loading ? (
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:300, flexDirection:"column", gap:16 }}>
             <div style={{
-              height:"100%", borderRadius:3,
-              background:"linear-gradient(90deg,#c8f55a,#a8e040)",
-              width:`${recovPct}%`,
-              transition:"width 1.2s cubic-bezier(.22,.61,.36,1)",
+              width:28, height:28, borderRadius:"50%",
+              border:"2px solid rgba(200,245,90,.15)",
+              borderTopColor:"#c8f55a",
+              animation:"spin 0.8s linear infinite",
             }}/>
+            <p style={{ fontSize:13, color:"rgba(236,236,236,.3)" }}>Loading customers...</p>
           </div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginTop:7 }}>
-            <p style={{ fontSize:11, color:"rgba(236,236,236,.2)" }}>{fmt(totalRecov)} collected</p>
-            <p style={{ fontSize:11, color:"rgba(236,236,236,.2)" }}>{fmt(totalPend)} remaining</p>
-          </div>
-        </div>
-
-        {/* ══ QUICK SECTIONS — tabs ══ */}
-        <div style={{ display:"flex", gap:6, marginBottom:16 }}>
-          {([
-            { key:"all",      label:"All Customers" },
-            { key:"overdue",  label:`🔴 Overdue (${overdueList.length})` },
-            { key:"upcoming", label:`🟡 Upcoming (${upcomingList.length})` },
-          ] as const).map(t => (
-            <button key={t.key} className="tab-btn" onClick={()=>setTab(t.key)} style={{
-              background: tab===t.key ? "rgba(200,245,90,.12)" : "rgba(255,255,255,.03)",
-              color:       tab===t.key ? "#c8f55a"              : "rgba(236,236,236,.45)",
-              border:      tab===t.key ? "1px solid rgba(200,245,90,.22)" : "1px solid rgba(236,236,236,.08)",
-            }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* ══ OVERDUE PANEL ══ */}
-        {tab==="overdue" && (
-          <div className="section-card" style={{ borderColor:"rgba(248,113,113,.15)", background:"rgba(248,113,113,.025)" }}>
-            <p style={{ fontSize:11, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(248,113,113,.7)", marginBottom:16 }}>
-              Overdue Payments — Immediate Action Required
-            </p>
-            {overdueList.length===0
-              ? <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", padding:"20px 0" }}>No overdue payments 🎉</p>
-              : overdueList.map(c => {
-                  const d = Math.abs(daysFromNow(c.nextDueDate));
-                  const msg = buildReminderMsg(c);
-                  return (
-                    <div key={c.id} style={{
-                      display:"grid", gridTemplateColumns:"1fr auto", gap:16, alignItems:"center",
-                      padding:"16px 0", borderBottom:"1px solid rgba(248,113,113,.08)",
-                    }}>
-                      <div>
-                        <p style={{ fontSize:14, fontWeight:500, marginBottom:3 }}>{c.name}</p>
-                        <p style={{ fontSize:12, color:"#f87171", marginBottom:2 }}>
-                          {d} day{d!==1?"s":""} overdue &nbsp;·&nbsp; {fmt(c.amount)} &nbsp;·&nbsp; {CYCLE_LABEL[c.billingCycle]}
-                        </p>
-                        {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.28)", fontStyle:"italic" }}>{c.note}</p>}
-                      </div>
-                      <div style={{ display:"flex", gap:8 }}>
-                        <a
-                          href={waLink(c.phone, msg)} target="_blank" rel="noopener noreferrer"
-                          onClick={() => showToast(`Reminder sent to ${c.name} ✓`)}
-                          style={{
-                            padding:"8px 14px", background:"#25D366", color:"#fff",
-                            borderRadius:2, fontSize:12, fontWeight:500,
-                            textDecoration:"none", whiteSpace:"nowrap",
-                            fontFamily:"'Inter',sans-serif",
-                          }}
-                        >
-                          WhatsApp
-                        </a>
-                        <button onClick={() => markPaid(c.id)} style={{
-                          padding:"8px 14px", background:"rgba(200,245,90,.12)", color:"#c8f55a",
-                          border:"1px solid rgba(200,245,90,.2)", borderRadius:2,
-                          fontSize:12, fontWeight:500, cursor:"pointer",
-                          fontFamily:"'Inter',sans-serif",
-                        }}>
-                          ✓ Mark Paid
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-            }
-          </div>
-        )}
-
-        {/* ══ UPCOMING PANEL ══ */}
-        {tab==="upcoming" && (
-          <div className="section-card" style={{ borderColor:"rgba(99,102,241,.2)", background:"rgba(99,102,241,.025)" }}>
-            <p style={{ fontSize:11, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(129,140,248,.7)", marginBottom:16 }}>
-              Upcoming Payments — Due within 3 days
-            </p>
-            {upcomingList.length===0
-              ? <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", padding:"20px 0" }}>No upcoming payments right now</p>
-              : upcomingList.map(c => {
-                  const diff = daysFromNow(c.nextDueDate);
-                  const msg  = buildReminderMsg(c);
-                  const label = diff===0 ? "Due today" : `Due in ${diff} day${diff!==1?"s":""}`;
-                  return (
-                    <div key={c.id} style={{
-                      display:"grid", gridTemplateColumns:"1fr auto", gap:16, alignItems:"center",
-                      padding:"16px 0", borderBottom:"1px solid rgba(99,102,241,.08)",
-                    }}>
-                      <div>
-                        <p style={{ fontSize:14, fontWeight:500, marginBottom:3 }}>{c.name}</p>
-                        <p style={{ fontSize:12, color:"#818cf8", marginBottom:2 }}>
-                          {label} &nbsp;·&nbsp; {fmt(c.amount)} &nbsp;·&nbsp; {CYCLE_LABEL[c.billingCycle]}
-                        </p>
-                        {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.28)", fontStyle:"italic" }}>{c.note}</p>}
-                      </div>
-                      <div style={{ display:"flex", gap:8 }}>
-                        <a
-                          href={waLink(c.phone, msg)} target="_blank" rel="noopener noreferrer"
-                          onClick={() => showToast(`Reminder sent to ${c.name} ✓`)}
-                          style={{
-                            padding:"8px 14px", background:"#25D366", color:"#fff",
-                            borderRadius:2, fontSize:12, fontWeight:500,
-                            textDecoration:"none", whiteSpace:"nowrap",
-                            fontFamily:"'Inter',sans-serif",
-                          }}
-                        >
-                          WhatsApp
-                        </a>
-                        <button onClick={() => markPaid(c.id)} style={{
-                          padding:"8px 14px", background:"rgba(200,245,90,.12)", color:"#c8f55a",
-                          border:"1px solid rgba(200,245,90,.2)", borderRadius:2,
-                          fontSize:12, fontWeight:500, cursor:"pointer",
-                          fontFamily:"'Inter',sans-serif",
-                        }}>
-                          ✓ Mark Paid
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-            }
-          </div>
-        )}
-
-        {/* ══ MAIN TABLE ══ */}
-        {tab==="all" && (
+        ) : (
           <>
-            {/* search + filter */}
-            <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
-              <div style={{ position:"relative", flex:1, minWidth:180 }}>
-                <span style={{ position:"absolute", left:11, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"rgba(236,236,236,.25)", pointerEvents:"none" }}>⌕</span>
-                <input
-                  value={search}
-                  onChange={e=>setSearch(e.target.value)}
-                  placeholder="Search by name or phone..."
-                  style={{
-                    width:"100%", padding:"9px 13px 9px 32px",
-                    background:"rgba(255,255,255,.04)",
-                    border:"1px solid rgba(236,236,236,.09)",
-                    borderRadius:4, color:"#ececec",
-                    fontFamily:"'Inter',sans-serif", fontSize:13, outline:"none",
-                  }}
-                />
+            {/* ══ STAT CARDS ══ */}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:12, marginBottom:28 }}>
+              {([
+                { label:"Total Pending",   value:fmt(totalPend),              sub:`${unpaidList.length} customers`, accent:false, red:false, purple:false },
+                { label:"Recovered",       value:fmt(totalRecov),             sub:"collected",                      accent:true,  red:false, purple:false },
+                { label:"Overdue",         value:String(overdueList.length),  sub:"action needed",                  accent:false, red:true,  purple:false },
+                { label:"Upcoming",        value:String(upcomingList.length), sub:"due within 3 days",              accent:false, red:false, purple:true  },
+                { label:"Total Customers", value:String(customers.length),    sub:"in system",                      accent:false, red:false, purple:false },
+              ] as const).map((s,i) => (
+                <div key={i} style={{
+                  padding:"20px 20px 16px",
+                  border: s.accent  ? "1px solid rgba(200,245,90,.18)"
+                        : s.red     ? "1px solid rgba(248,113,113,.15)"
+                        : s.purple  ? "1px solid rgba(99,102,241,.2)"
+                        : "1px solid rgba(236,236,236,.07)",
+                  background: s.accent  ? "rgba(200,245,90,.04)"
+                            : s.red     ? "rgba(248,113,113,.04)"
+                            : s.purple  ? "rgba(99,102,241,.04)"
+                            : "rgba(255,255,255,.02)",
+                  borderRadius:4,
+                  animation:`slideUp .4s ease ${i*.06}s both`,
+                }}>
+                  <p style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.28)", marginBottom:10 }}>{s.label}</p>
+                  <p style={{ fontSize:30, fontWeight:300, letterSpacing:"-0.03em", lineHeight:1, marginBottom:6,
+                    color: s.accent?"#c8f55a" : s.red?"#f87171" : s.purple?"#818cf8" : "#ececec" }}>
+                    {s.value}
+                  </p>
+                  <p style={{ fontSize:11, color:"rgba(236,236,236,.22)" }}>{s.sub}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* ══ RECOVERY BAR ══ */}
+            <div className="section-card" style={{ marginBottom:20 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+                <p style={{ fontSize:11, letterSpacing:".08em", textTransform:"uppercase", color:"rgba(236,236,236,.28)" }}>Recovery Rate</p>
+                <p style={{ fontSize:13, fontWeight:500, color:"#c8f55a" }}>{recovPct}%</p>
               </div>
-              <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
-                {(["all","pending","upcoming","overdue","paid"] as const).map(f => (
-                  <button key={f} className="filter-btn" onClick={()=>setFilter(f)} style={{
-                    background: filter===f ? "rgba(200,245,90,.1)"      : "transparent",
-                    color:       filter===f ? "#c8f55a"                  : "rgba(236,236,236,.38)",
-                    borderColor: filter===f ? "rgba(200,245,90,.22)"     : "rgba(236,236,236,.1)",
-                    textTransform:"capitalize",
-                  }}>
-                    {f==="all"      ? `All (${customers.length})`
-                    :f==="pending"  ? `Pending (${customers.filter(c=>c.status==="pending").length})`
-                    :f==="upcoming" ? `Upcoming (${upcomingList.length})`
-                    :f==="overdue"  ? `Overdue (${overdueList.length})`
-                    :                 `Paid (${paidList.length})`}
-                  </button>
-                ))}
+              <div style={{ height:5, background:"rgba(236,236,236,.07)", borderRadius:3, overflow:"hidden" }}>
+                <div style={{
+                  height:"100%", borderRadius:3,
+                  background:"linear-gradient(90deg,#c8f55a,#a8e040)",
+                  width:`${recovPct}%`,
+                  transition:"width 1.2s cubic-bezier(.22,.61,.36,1)",
+                }}/>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between", marginTop:7 }}>
+                <p style={{ fontSize:11, color:"rgba(236,236,236,.2)" }}>{fmt(totalRecov)} collected</p>
+                <p style={{ fontSize:11, color:"rgba(236,236,236,.2)" }}>{fmt(totalPend)} remaining</p>
               </div>
             </div>
 
-            {/* table */}
-            <div style={{ border:"1px solid rgba(236,236,236,.07)", borderRadius:4, overflow:"hidden" }}>
+            {/* ══ TABS ══ */}
+            <div style={{ display:"flex", gap:6, marginBottom:16 }}>
+              {([
+                { key:"all",      label:"All Customers" },
+                { key:"overdue",  label:`🔴 Overdue (${overdueList.length})` },
+                { key:"upcoming", label:`🟡 Upcoming (${upcomingList.length})` },
+              ] as const).map(t => (
+                <button key={t.key} className="tab-btn" onClick={()=>setTab(t.key)} style={{
+                  background: tab===t.key ? "rgba(200,245,90,.12)" : "rgba(255,255,255,.03)",
+                  color:       tab===t.key ? "#c8f55a"              : "rgba(236,236,236,.45)",
+                  border:      tab===t.key ? "1px solid rgba(200,245,90,.22)" : "1px solid rgba(236,236,236,.08)",
+                }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
 
-              {/* header */}
-              <div style={{
-                display:"grid", gridTemplateColumns:"2fr 1fr 1.1fr 0.9fr 0.8fr 0.9fr 180px",
-                padding:"10px 18px",
-                background:"rgba(255,255,255,.025)",
-                borderBottom:"1px solid rgba(236,236,236,.07)",
-              }}>
-                <button className="th-btn" onClick={()=>toggleSort("name")}>Name <SortArrow active={sortKey==="name"} asc={sortAsc}/></button>
-                <button className="th-btn" onClick={()=>toggleSort("amount")}>Amount <SortArrow active={sortKey==="amount"} asc={sortAsc}/></button>
-                <span style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.3)" }}>Cycle</span>
-                <button className="th-btn" onClick={()=>toggleSort("nextDueDate")}>Next Due <SortArrow active={sortKey==="nextDueDate"} asc={sortAsc}/></button>
-                <span style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.3)" }}>Days</span>
-                <button className="th-btn" onClick={()=>toggleSort("status")}>Status <SortArrow active={sortKey==="status"} asc={sortAsc}/></button>
-                <span style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.3)", textAlign:"right" }}>Actions</span>
+            {/* ══ OVERDUE PANEL ══ */}
+            {tab==="overdue" && (
+              <div className="section-card" style={{ borderColor:"rgba(248,113,113,.15)", background:"rgba(248,113,113,.025)" }}>
+                <p style={{ fontSize:11, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(248,113,113,.7)", marginBottom:16 }}>
+                  Overdue Payments — Immediate Action Required
+                </p>
+                {overdueList.length===0
+                  ? <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", padding:"20px 0" }}>No overdue payments 🎉</p>
+                  : overdueList.map(c => {
+                      const d = Math.abs(daysFromNow(c.nextDueDate));
+                      const msg = buildReminderMsg(c);
+                      return (
+                        <div key={c.id} style={{
+                          display:"grid", gridTemplateColumns:"1fr auto", gap:16, alignItems:"center",
+                          padding:"16px 0", borderBottom:"1px solid rgba(248,113,113,.08)",
+                        }}>
+                          <div>
+                            <p style={{ fontSize:14, fontWeight:500, marginBottom:3 }}>{c.name}</p>
+                            <p style={{ fontSize:12, color:"#f87171", marginBottom:2 }}>
+                              {d} day{d!==1?"s":""} overdue &nbsp;·&nbsp; {fmt(c.amount)} &nbsp;·&nbsp; {CYCLE_LABEL[c.billingCycle]}
+                            </p>
+                            {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.28)", fontStyle:"italic" }}>{c.note}</p>}
+                          </div>
+                          <div style={{ display:"flex", gap:8 }}>
+                            <a href={waLink(c.phone, msg)} target="_blank" rel="noopener noreferrer"
+                              onClick={() => showToast(`Reminder sent to ${c.name} ✓`)}
+                              style={{ padding:"8px 14px", background:"#25D366", color:"#fff", borderRadius:2, fontSize:12, fontWeight:500, textDecoration:"none", whiteSpace:"nowrap", fontFamily:"'Inter',sans-serif" }}>
+                              WhatsApp
+                            </a>
+                            <button onClick={() => markPaid(c.id)} style={{ padding:"8px 14px", background:"rgba(200,245,90,.12)", color:"#c8f55a", border:"1px solid rgba(200,245,90,.2)", borderRadius:2, fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+                              ✓ Mark Paid
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                }
               </div>
+            )}
 
-              {/* empty */}
-              {list.length===0 ? (
-                <div style={{ padding:"64px 48px", textAlign:"center" }}>
-                  <p style={{ fontSize:26, marginBottom:12 }}>📋</p>
-                  <p style={{ fontSize:14, color:"rgba(236,236,236,.45)", marginBottom:6 }}>
-                    {search||filter!=="all" ? "No customers match your filter" : "No customers yet"}
-                  </p>
-                  <p style={{ fontSize:12, color:"rgba(236,236,236,.22)", marginBottom:20 }}>
-                    {search||filter!=="all" ? "Try clearing the search or filter" : "Add your first customer to start tracking"}
-                  </p>
-                  {!search && filter==="all" && (
-                    <button onClick={openAdd} style={{
-                      background:"#c8f55a", color:"#0a0a0a", border:"none",
-                      padding:"10px 26px", borderRadius:2, fontSize:13, fontWeight:500,
-                      cursor:"pointer", fontFamily:"'Inter',sans-serif",
-                    }}>
-                      + Add First Customer
-                    </button>
+            {/* ══ UPCOMING PANEL ══ */}
+            {tab==="upcoming" && (
+              <div className="section-card" style={{ borderColor:"rgba(99,102,241,.2)", background:"rgba(99,102,241,.025)" }}>
+                <p style={{ fontSize:11, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(129,140,248,.7)", marginBottom:16 }}>
+                  Upcoming Payments — Due within 3 days
+                </p>
+                {upcomingList.length===0
+                  ? <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", padding:"20px 0" }}>No upcoming payments right now</p>
+                  : upcomingList.map(c => {
+                      const diff = daysFromNow(c.nextDueDate);
+                      const msg  = buildReminderMsg(c);
+                      const label = diff===0 ? "Due today" : `Due in ${diff} day${diff!==1?"s":""}`;
+                      return (
+                        <div key={c.id} style={{
+                          display:"grid", gridTemplateColumns:"1fr auto", gap:16, alignItems:"center",
+                          padding:"16px 0", borderBottom:"1px solid rgba(99,102,241,.08)",
+                        }}>
+                          <div>
+                            <p style={{ fontSize:14, fontWeight:500, marginBottom:3 }}>{c.name}</p>
+                            <p style={{ fontSize:12, color:"#818cf8", marginBottom:2 }}>
+                              {label} &nbsp;·&nbsp; {fmt(c.amount)} &nbsp;·&nbsp; {CYCLE_LABEL[c.billingCycle]}
+                            </p>
+                            {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.28)", fontStyle:"italic" }}>{c.note}</p>}
+                          </div>
+                          <div style={{ display:"flex", gap:8 }}>
+                            <a href={waLink(c.phone, msg)} target="_blank" rel="noopener noreferrer"
+                              onClick={() => showToast(`Reminder sent to ${c.name} ✓`)}
+                              style={{ padding:"8px 14px", background:"#25D366", color:"#fff", borderRadius:2, fontSize:12, fontWeight:500, textDecoration:"none", whiteSpace:"nowrap", fontFamily:"'Inter',sans-serif" }}>
+                              WhatsApp
+                            </a>
+                            <button onClick={() => markPaid(c.id)} style={{ padding:"8px 14px", background:"rgba(200,245,90,.12)", color:"#c8f55a", border:"1px solid rgba(200,245,90,.2)", borderRadius:2, fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+                              ✓ Mark Paid
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                }
+              </div>
+            )}
+
+            {/* ══ MAIN TABLE ══ */}
+            {tab==="all" && (
+              <>
+                <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+                  <div style={{ position:"relative", flex:1, minWidth:180 }}>
+                    <span style={{ position:"absolute", left:11, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"rgba(236,236,236,.25)", pointerEvents:"none" }}>⌕</span>
+                    <input
+                      value={search}
+                      onChange={e=>setSearch(e.target.value)}
+                      placeholder="Search by name or phone..."
+                      style={{ width:"100%", padding:"9px 13px 9px 32px", background:"rgba(255,255,255,.04)", border:"1px solid rgba(236,236,236,.09)", borderRadius:4, color:"#ececec", fontFamily:"'Inter',sans-serif", fontSize:13, outline:"none" }}
+                    />
+                  </div>
+                  <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
+                    {(["all","pending","upcoming","overdue","paid"] as const).map(f => (
+                      <button key={f} className="filter-btn" onClick={()=>setFilter(f)} style={{
+                        background: filter===f ? "rgba(200,245,90,.1)"  : "transparent",
+                        color:       filter===f ? "#c8f55a"              : "rgba(236,236,236,.38)",
+                        borderColor: filter===f ? "rgba(200,245,90,.22)" : "rgba(236,236,236,.1)",
+                        textTransform:"capitalize",
+                      }}>
+                        {f==="all"      ? `All (${customers.length})`
+                        :f==="pending"  ? `Pending (${customers.filter(c=>c.status==="pending").length})`
+                        :f==="upcoming" ? `Upcoming (${upcomingList.length})`
+                        :f==="overdue"  ? `Overdue (${overdueList.length})`
+                        :                 `Paid (${paidList.length})`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ border:"1px solid rgba(236,236,236,.07)", borderRadius:4, overflow:"hidden" }}>
+                  <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1.1fr 0.9fr 0.8fr 0.9fr 180px", padding:"10px 18px", background:"rgba(255,255,255,.025)", borderBottom:"1px solid rgba(236,236,236,.07)" }}>
+                    <button className="th-btn" onClick={()=>toggleSort("name")}>Name <SortArrow active={sortKey==="name"} asc={sortAsc}/></button>
+                    <button className="th-btn" onClick={()=>toggleSort("amount")}>Amount <SortArrow active={sortKey==="amount"} asc={sortAsc}/></button>
+                    <span style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.3)" }}>Cycle</span>
+                    <button className="th-btn" onClick={()=>toggleSort("nextDueDate")}>Next Due <SortArrow active={sortKey==="nextDueDate"} asc={sortAsc}/></button>
+                    <span style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.3)" }}>Days</span>
+                    <button className="th-btn" onClick={()=>toggleSort("status")}>Status <SortArrow active={sortKey==="status"} asc={sortAsc}/></button>
+                    <span style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.3)", textAlign:"right" }}>Actions</span>
+                  </div>
+
+                  {list.length===0 ? (
+                    <div style={{ padding:"64px 48px", textAlign:"center" }}>
+                      <p style={{ fontSize:26, marginBottom:12 }}>📋</p>
+                      <p style={{ fontSize:14, color:"rgba(236,236,236,.45)", marginBottom:6 }}>
+                        {search||filter!=="all" ? "No customers match your filter" : "No customers yet"}
+                      </p>
+                      <p style={{ fontSize:12, color:"rgba(236,236,236,.22)", marginBottom:20 }}>
+                        {search||filter!=="all" ? "Try clearing the search or filter" : "Add your first customer to start tracking"}
+                      </p>
+                      {!search && filter==="all" && (
+                        <button onClick={openAdd} style={{ background:"#c8f55a", color:"#0a0a0a", border:"none", padding:"10px 26px", borderRadius:2, fontSize:13, fontWeight:500, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+                          + Add First Customer
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    list.map((c,i) => {
+                      const diff    = daysFromNow(c.nextDueDate);
+                      const ss      = STATUS_CFG[c.status];
+                      const daysLbl = c.status==="paid" ? "—" : diff>0 ? `${diff}d left` : diff<0 ? `${Math.abs(diff)}d late` : "today";
+                      return (
+                        <div key={c.id} className="row" style={{
+                          display:"grid", gridTemplateColumns:"2fr 1fr 1.1fr 0.9fr 0.8fr 0.9fr 180px",
+                          padding:"15px 18px", alignItems:"center",
+                          borderBottom: i<list.length-1 ? "1px solid rgba(236,236,236,.05)" : "none",
+                          background:"rgba(255,255,255,.01)",
+                          borderLeft: c.status==="overdue"  ? "2px solid rgba(248,113,113,.45)"
+                                    : c.status==="upcoming" ? "2px solid rgba(99,102,241,.45)"
+                                    : "2px solid transparent",
+                          transition:"background .15s",
+                          animationDelay:`${i*.035}s`,
+                        }}>
+                          <div>
+                            <p style={{ fontSize:14, fontWeight:400, marginBottom:2 }}>{c.name}</p>
+                            <p style={{ fontSize:11, color:"rgba(236,236,236,.28)" }}>{c.phone}</p>
+                            {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.2)", fontStyle:"italic", marginTop:1 }}>{c.note}</p>}
+                          </div>
+                          <span style={{ fontSize:14, fontWeight:500 }}>{fmt(c.amount)}</span>
+                          <span style={{ fontSize:12, color:"rgba(236,236,236,.4)" }}>{CYCLE_LABEL[c.billingCycle]}</span>
+                          <span style={{ fontSize:12, color:"rgba(236,236,236,.45)" }}>{fmtDate(c.nextDueDate)}</span>
+                          <span style={{ fontSize:12, fontWeight:500, color: c.status==="overdue"?"#f87171":c.status==="upcoming"?"#818cf8":c.status==="paid"?"rgba(236,236,236,.2)":"rgba(236,236,236,.4)" }}>
+                            {daysLbl}
+                          </span>
+                          <span style={{ display:"inline-block", padding:"3px 9px", background:ss.bg, color:ss.color, border:`1px solid ${ss.border}`, fontSize:11, fontWeight:500, letterSpacing:".03em", borderRadius:2, width:"fit-content" }}>
+                            {ss.label}
+                          </span>
+                          <div style={{ display:"flex", gap:2, justifyContent:"flex-end" }}>
+                            {c.status!=="paid" && (
+                              <>
+                                <button className="icon-btn" onClick={()=>markPaid(c.id)} style={{ color:"#c8f55a", fontSize:11, fontWeight:500 }} title="Mark Paid">✓ Paid</button>
+                                <button className="icon-btn" onClick={()=>openRemind(c)} style={{ color:"rgba(236,236,236,.45)", fontSize:14 }} title="Send Reminder">✉</button>
+                              </>
+                            )}
+                            {c.status==="paid" && (
+                              <button className="icon-btn" onClick={()=>undoPaid(c.id)} style={{ color:"rgba(236,236,236,.3)", fontSize:11 }} title="Undo">↩ Undo</button>
+                            )}
+                            <button className="icon-btn" onClick={()=>openHistory(c)} style={{ color:"rgba(236,236,236,.35)", fontSize:13 }} title="Payment history">≡</button>
+                            <button className="icon-btn" onClick={()=>openEdit(c)} style={{ color:"rgba(236,236,236,.35)", fontSize:14 }} title="Edit">✎</button>
+                            <button className="icon-btn" onClick={()=>deleteCustomer(c.id)} style={{ color:"rgba(248,113,113,.4)", fontSize:13 }} title="Delete">✕</button>
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
-              ) : (
-                list.map((c,i) => {
-                  const diff   = daysFromNow(c.nextDueDate);
-                  const ss     = STATUS_CFG[c.status];
-                  const daysLbl = c.status==="paid"
-                    ? "—"
-                    : diff>0  ? `${diff}d left`
-                    : diff<0  ? `${Math.abs(diff)}d late`
-                    : "today";
-                  return (
-                    <div
-                      key={c.id}
-                      className="row"
-                      style={{
-                        display:"grid", gridTemplateColumns:"2fr 1fr 1.1fr 0.9fr 0.8fr 0.9fr 180px",
-                        padding:"15px 18px", alignItems:"center",
-                        borderBottom: i<list.length-1 ? "1px solid rgba(236,236,236,.05)" : "none",
-                        background:"rgba(255,255,255,.01)",
-                        borderLeft: c.status==="overdue"  ? "2px solid rgba(248,113,113,.45)"
-                                  : c.status==="upcoming" ? "2px solid rgba(99,102,241,.45)"
-                                  : "2px solid transparent",
-                        transition:"background .15s",
-                        animationDelay:`${i*.035}s`,
-                      }}
-                    >
-                      {/* name */}
-                      <div>
-                        <p style={{ fontSize:14, fontWeight:400, marginBottom:2 }}>{c.name}</p>
-                        <p style={{ fontSize:11, color:"rgba(236,236,236,.28)" }}>{c.phone}</p>
-                        {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.2)", fontStyle:"italic", marginTop:1 }}>{c.note}</p>}
-                      </div>
 
-                      {/* amount */}
-                      <span style={{ fontSize:14, fontWeight:500 }}>{fmt(c.amount)}</span>
-
-                      {/* cycle */}
-                      <span style={{ fontSize:12, color:"rgba(236,236,236,.4)" }}>{CYCLE_LABEL[c.billingCycle]}</span>
-
-                      {/* next due */}
-                      <span style={{ fontSize:12, color:"rgba(236,236,236,.45)" }}>{fmtDate(c.nextDueDate)}</span>
-
-                      {/* days */}
-                      <span style={{ fontSize:12, fontWeight:500,
-                        color: c.status==="overdue"?"#f87171" : c.status==="upcoming"?"#818cf8" : c.status==="paid"?"rgba(236,236,236,.2)":"rgba(236,236,236,.4)" }}>
-                        {daysLbl}
-                      </span>
-
-                      {/* status */}
-                      <span style={{
-                        display:"inline-block", padding:"3px 9px",
-                        background:ss.bg, color:ss.color, border:`1px solid ${ss.border}`,
-                        fontSize:11, fontWeight:500, letterSpacing:".03em",
-                        borderRadius:2, width:"fit-content",
-                      }}>
-                        {ss.label}
-                      </span>
-
-                      {/* actions */}
-                      <div style={{ display:"flex", gap:2, justifyContent:"flex-end" }}>
-                        {c.status!=="paid" && (
-                          <>
-                            <button className="icon-btn" onClick={()=>markPaid(c.id)}
-                              style={{ color:"#c8f55a", fontSize:11, fontWeight:500 }} title="Mark Paid">
-                              ✓ Paid
-                            </button>
-                            <button className="icon-btn" onClick={()=>openRemind(c)}
-                              style={{ color:"rgba(236,236,236,.45)", fontSize:14 }} title="Send Reminder">
-                              ✉
-                            </button>
-                          </>
-                        )}
-                        {c.status==="paid" && (
-                          <button className="icon-btn" onClick={()=>undoPaid(c.id)}
-                            style={{ color:"rgba(236,236,236,.3)", fontSize:11 }} title="Undo">
-                            ↩ Undo
-                          </button>
-                        )}
-                        <button className="icon-btn" onClick={()=>openHistory(c)}
-                          style={{ color:"rgba(236,236,236,.35)", fontSize:13 }} title="Payment history">
-                          ≡
-                        </button>
-                        <button className="icon-btn" onClick={()=>openEdit(c)}
-                          style={{ color:"rgba(236,236,236,.35)", fontSize:14 }} title="Edit">
-                          ✎
-                        </button>
-                        <button className="icon-btn" onClick={()=>deleteCustomer(c.id)}
-                          style={{ color:"rgba(248,113,113,.4)", fontSize:13 }} title="Delete">
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {list.length>0 && (
-              <p style={{ fontSize:11, color:"rgba(236,236,236,.18)", marginTop:10, letterSpacing:".04em" }}>
-                Showing {list.length} of {customers.length} customers
-              </p>
+                {list.length>0 && (
+                  <p style={{ fontSize:11, color:"rgba(236,236,236,.18)", marginTop:10, letterSpacing:".04em" }}>
+                    Showing {list.length} of {customers.length} customers
+                  </p>
+                )}
+              </>
             )}
           </>
         )}
@@ -880,124 +867,55 @@ export default function Dashboard() {
 
       {/* ══ MODALS ══ */}
       {modal && (
-        <div
-          onClick={closeModal}
-          style={{
-            position:"fixed", inset:0, background:"rgba(0,0,0,.75)",
-            backdropFilter:"blur(5px)", zIndex:300,
-            display:"flex", alignItems:"center", justifyContent:"center", padding:20,
-          }}
-        >
-          {/* ── ADD / EDIT ── */}
+        <div onClick={() => setModal(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.75)", backdropFilter:"blur(5px)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+
           {(modal==="add"||modal==="edit") && (
-            <div onClick={e=>e.stopPropagation()} style={{
-              background:"#111", border:"1px solid rgba(236,236,236,.1)",
-              borderRadius:6, padding:"36px 36px 32px", width:"100%", maxWidth:460,
-              animation:"slideUp .22s ease", maxHeight:"90vh", overflowY:"auto",
-            }}>
+            <div onClick={e=>e.stopPropagation()} style={{ background:"#111", border:"1px solid rgba(236,236,236,.1)", borderRadius:6, padding:"36px 36px 32px", width:"100%", maxWidth:460, animation:"slideUp .22s ease", maxHeight:"90vh", overflowY:"auto" }}>
               <h2 style={{ fontSize:17, fontWeight:500, letterSpacing:"-0.02em", marginBottom:26 }}>
                 {modal==="add" ? "Add Customer" : "Edit Customer"}
               </h2>
-
-              <FormField label="Full Name"        fieldKey="name"        value={form.name}        error={errors.name}        placeholder="e.g. Raj Gym"           onChange={handleFieldChange}/>
-              <FormField label="Phone"            fieldKey="phone"       value={form.phone}       error={errors.phone}       placeholder="10-digit mobile number" onChange={handleFieldChange} type="tel"/>
-              <FormField label="Amount (₹)"       fieldKey="amount"      value={form.amount}      error={errors.amount}      placeholder="e.g. 2500"              onChange={handleFieldChange} type="number"/>
-              <FormField label="Next Due Date"    fieldKey="nextDueDate" value={form.nextDueDate} error={errors.nextDueDate}                                      onChange={handleFieldChange} type="date"/>
-
-              {/* billing cycle select */}
-              <FormField label="Billing Cycle" fieldKey="billingCycle" value={form.billingCycle} onChange={handleFieldChange}>
-                <select
-                  value={form.billingCycle}
-                  onChange={e => handleFieldChange("billingCycle", e.target.value as BillingCycle)}
-                  style={{
-                    width:"100%", padding:"11px 13px",
-                    background:"rgba(255,255,255,.05)",
-                    border:"1px solid rgba(236,236,236,.1)",
-                    borderRadius:4, color:"#ececec",
-                    fontFamily:"'Inter',sans-serif", fontSize:14,
-                  }}
-                >
+              <FormField label="Full Name"      fieldKey="name"        value={form.name}        error={errors.name}        placeholder="e.g. Raj Gym"           onChange={handleFieldChange}/>
+              <FormField label="Phone"          fieldKey="phone"       value={form.phone}       error={errors.phone}       placeholder="10-digit mobile number" onChange={handleFieldChange} type="tel"/>
+              <FormField label="Amount (₹)"     fieldKey="amount"      value={form.amount}      error={errors.amount}      placeholder="e.g. 2500"              onChange={handleFieldChange} type="number"/>
+              <FormField label="Next Due Date"  fieldKey="nextDueDate" value={form.nextDueDate} error={errors.nextDueDate}                                      onChange={handleFieldChange} type="date"/>
+              <FormField label="Billing Cycle"  fieldKey="billingCycle" value={form.billingCycle} onChange={handleFieldChange}>
+                <select value={form.billingCycle} onChange={e=>handleFieldChange("billingCycle", e.target.value as BillingCycle)} style={{ width:"100%", padding:"11px 13px", background:"rgba(255,255,255,.05)", border:"1px solid rgba(236,236,236,.1)", borderRadius:4, color:"#ececec", fontFamily:"'Inter',sans-serif", fontSize:14 }}>
                   <option value="weekly">Weekly</option>
                   <option value="monthly">Monthly</option>
                   <option value="quarterly">Quarterly (3 months)</option>
                   <option value="yearly">Yearly</option>
                 </select>
               </FormField>
-
-              <FormField label="Note (optional)"  fieldKey="note"        value={form.note}        error={undefined}          placeholder="e.g. Gym membership"    onChange={handleFieldChange}/>
-
+              <FormField label="Note (optional)" fieldKey="note" value={form.note} placeholder="e.g. Gym membership" onChange={handleFieldChange}/>
               <div style={{ display:"flex", gap:10, marginTop:6 }}>
-                <button
-                  onClick={modal==="add" ? handleAdd : handleEdit}
-                  style={{
-                    flex:1, padding:"12px", background:"#c8f55a", color:"#0a0a0a",
-                    border:"none", borderRadius:2, fontSize:14, fontWeight:500,
-                    cursor:"pointer", fontFamily:"'Inter',sans-serif", transition:"background .18s",
-                  }}
-                  onMouseEnter={e=>e.currentTarget.style.background="#b8e84a"}
-                  onMouseLeave={e=>e.currentTarget.style.background="#c8f55a"}
-                >
+                <button onClick={modal==="add" ? handleAdd : handleEdit} style={{ flex:1, padding:"12px", background:"#c8f55a", color:"#0a0a0a", border:"none", borderRadius:2, fontSize:14, fontWeight:500, cursor:"pointer", fontFamily:"'Inter',sans-serif", transition:"background .18s" }} onMouseEnter={e=>e.currentTarget.style.background="#b8e84a"} onMouseLeave={e=>e.currentTarget.style.background="#c8f55a"}>
                   {modal==="add" ? "Add Customer" : "Save Changes"}
                 </button>
-                <button onClick={closeModal} style={{
-                  padding:"12px 18px", background:"transparent",
-                  color:"rgba(236,236,236,.38)", border:"1px solid rgba(236,236,236,.1)",
-                  borderRadius:2, fontSize:14, cursor:"pointer", fontFamily:"'Inter',sans-serif",
-                }}>
+                <button onClick={closeModalAndReset} style={{ padding:"12px 18px", background:"transparent", color:"rgba(236,236,236,.38)", border:"1px solid rgba(236,236,236,.1)", borderRadius:2, fontSize:14, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
                   Cancel
                 </button>
               </div>
             </div>
           )}
 
-          {/* ── REMIND ── */}
           {modal==="remind" && active && (() => {
             const msg  = buildReminderMsg(active);
             const diff = daysFromNow(active.nextDueDate);
             return (
-              <div onClick={e=>e.stopPropagation()} style={{
-                background:"#111", border:"1px solid rgba(236,236,236,.1)",
-                borderRadius:6, padding:"36px", width:"100%", maxWidth:420,
-                animation:"slideUp .22s ease",
-              }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#111", border:"1px solid rgba(236,236,236,.1)", borderRadius:6, padding:"36px", width:"100%", maxWidth:420, animation:"slideUp .22s ease" }}>
                 <h2 style={{ fontSize:17, fontWeight:500, marginBottom:4 }}>Send Reminder</h2>
                 <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", marginBottom:6 }}>to {active.name}</p>
                 <p style={{ fontSize:12, color: diff<0?"#f87171":diff<=3?"#818cf8":"rgba(236,236,236,.4)", marginBottom:22 }}>
-                  {diff<0 ? `${Math.abs(diff)} days overdue` : diff===0 ? "Due today" : `Due in ${diff} days`}
-                  &nbsp;·&nbsp; {fmt(active.amount)}
+                  {diff<0 ? `${Math.abs(diff)} days overdue` : diff===0 ? "Due today" : `Due in ${diff} days`} &nbsp;·&nbsp; {fmt(active.amount)}
                 </p>
-
-                {/* message preview */}
-                <div style={{
-                  padding:"14px 16px", background:"rgba(255,255,255,.04)",
-                  border:"1px solid rgba(236,236,236,.08)", borderRadius:4, marginBottom:20,
-                }}>
+                <div style={{ padding:"14px 16px", background:"rgba(255,255,255,.04)", border:"1px solid rgba(236,236,236,.08)", borderRadius:4, marginBottom:20 }}>
                   <p style={{ fontSize:13, lineHeight:1.7, color:"rgba(236,236,236,.55)" }}>{msg}</p>
                 </div>
-
                 <div style={{ display:"flex", gap:8 }}>
-                  <a
-                    href={waLink(active.phone, msg)}
-                    target="_blank" rel="noopener noreferrer"
-                    onClick={()=>{ setModal(null); showToast(`Reminder sent to ${active.name} ✓`); }}
-                    style={{
-                      flex:1, padding:"12px", background:"#25D366", color:"#fff",
-                      borderRadius:2, fontSize:14, fontWeight:500,
-                      textDecoration:"none", textAlign:"center", display:"block",
-                      fontFamily:"'Inter',sans-serif",
-                    }}
-                  >
+                  <a href={waLink(active.phone, msg)} target="_blank" rel="noopener noreferrer" onClick={()=>{ setModal(null); showToast(`Reminder sent to ${active.name} ✓`); }} style={{ flex:1, padding:"12px", background:"#25D366", color:"#fff", borderRadius:2, fontSize:14, fontWeight:500, textDecoration:"none", textAlign:"center", display:"block", fontFamily:"'Inter',sans-serif" }}>
                     Send on WhatsApp
                   </a>
-                  <button onClick={()=>{
-                    navigator.clipboard?.writeText(msg);
-                    setModal(null);
-                    showToast("Message copied ✓");
-                  }} style={{
-                    padding:"12px 16px", background:"transparent",
-                    color:"rgba(236,236,236,.4)", border:"1px solid rgba(236,236,236,.1)",
-                    borderRadius:2, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif",
-                  }}>
+                  <button onClick={()=>{ navigator.clipboard?.writeText(msg); setModal(null); showToast("Message copied ✓"); }} style={{ padding:"12px 16px", background:"transparent", color:"rgba(236,236,236,.4)", border:"1px solid rgba(236,236,236,.1)", borderRadius:2, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
                     Copy
                   </button>
                 </div>
@@ -1005,61 +923,33 @@ export default function Dashboard() {
             );
           })()}
 
-          {/* ── PAYMENT HISTORY ── */}
           {modal==="history" && active && (
-            <div onClick={e=>e.stopPropagation()} style={{
-              background:"#111", border:"1px solid rgba(236,236,236,.1)",
-              borderRadius:6, padding:"36px", width:"100%", maxWidth:440,
-              animation:"slideUp .22s ease", maxHeight:"80vh", overflowY:"auto",
-            }}>
+            <div onClick={e=>e.stopPropagation()} style={{ background:"#111", border:"1px solid rgba(236,236,236,.1)", borderRadius:6, padding:"36px", width:"100%", maxWidth:440, animation:"slideUp .22s ease", maxHeight:"80vh", overflowY:"auto" }}>
               <h2 style={{ fontSize:17, fontWeight:500, marginBottom:4 }}>Payment History</h2>
               <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", marginBottom:6 }}>{active.name}</p>
-              <p style={{ fontSize:12, color:"rgba(236,236,236,.35)", marginBottom:24 }}>
-                {CYCLE_LABEL[active.billingCycle]} · {fmt(active.amount)} per cycle
-              </p>
-
-              {/* next due */}
-              <div style={{
-                padding:"12px 14px", background:"rgba(255,255,255,.04)",
-                border:"1px solid rgba(236,236,236,.07)", borderRadius:4, marginBottom:20,
-                display:"flex", justifyContent:"space-between", alignItems:"center",
-              }}>
+              <p style={{ fontSize:12, color:"rgba(236,236,236,.35)", marginBottom:24 }}>{CYCLE_LABEL[active.billingCycle]} · {fmt(active.amount)} per cycle</p>
+              <div style={{ padding:"12px 14px", background:"rgba(255,255,255,.04)", border:"1px solid rgba(236,236,236,.07)", borderRadius:4, marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <p style={{ fontSize:12, color:"rgba(236,236,236,.4)" }}>Next due date</p>
-                <p style={{ fontSize:13, fontWeight:500, color: STATUS_CFG[active.status].color }}>
-                  {fmtDate(active.nextDueDate)}
-                </p>
+                <p style={{ fontSize:13, fontWeight:500, color:STATUS_CFG[active.status].color }}>{fmtDate(active.nextDueDate)}</p>
               </div>
-
               {active.paymentHistory.length===0
                 ? <p style={{ fontSize:13, color:"rgba(236,236,236,.3)", padding:"16px 0" }}>No payment history yet</p>
                 : (
                   <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
                     {active.paymentHistory.map((p,i) => (
-                      <div key={p.id} style={{
-                        display:"flex", justifyContent:"space-between", alignItems:"center",
-                        padding:"12px 14px",
-                        background: i===0 ? "rgba(200,245,90,.04)" : "rgba(255,255,255,.03)",
-                        border: `1px solid ${i===0?"rgba(200,245,90,.12)":"rgba(236,236,236,.06)"}`,
-                        borderRadius:4,
-                      }}>
+                      <div key={p.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 14px", background:i===0?"rgba(200,245,90,.04)":"rgba(255,255,255,.03)", border:`1px solid ${i===0?"rgba(200,245,90,.12)":"rgba(236,236,236,.06)"}`, borderRadius:4 }}>
                         <div>
                           <p style={{ fontSize:13, marginBottom:2 }}>{fmtDate(p.date)}</p>
                           {p.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.3)", fontStyle:"italic" }}>{p.note}</p>}
                           {i===0 && <p style={{ fontSize:10, color:"#c8f55a", letterSpacing:".06em", textTransform:"uppercase", marginTop:2 }}>Latest</p>}
                         </div>
-                        <p style={{ fontSize:14, fontWeight:500, color: i===0?"#c8f55a":"#ececec" }}>{fmt(p.amount)}</p>
+                        <p style={{ fontSize:14, fontWeight:500, color:i===0?"#c8f55a":"#ececec" }}>{fmt(p.amount)}</p>
                       </div>
                     ))}
                   </div>
                 )
               }
-
-              <button onClick={closeModal} style={{
-                width:"100%", padding:"11px", marginTop:20,
-                background:"transparent", color:"rgba(236,236,236,.38)",
-                border:"1px solid rgba(236,236,236,.1)", borderRadius:2,
-                fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif",
-              }}>
+              <button onClick={closeModal} style={{ width:"100%", padding:"11px", marginTop:20, background:"transparent", color:"rgba(236,236,236,.38)", border:"1px solid rgba(236,236,236,.1)", borderRadius:2, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
                 Close
               </button>
             </div>
@@ -1069,15 +959,7 @@ export default function Dashboard() {
 
       {/* ══ TOAST ══ */}
       {toast && (
-        <div style={{
-          position:"fixed", bottom:24, right:24, zIndex:500,
-          background:"#161616",
-          border:`1px solid ${toast.type==="error"?"rgba(248,113,113,.3)":"rgba(200,245,90,.22)"}`,
-          color: toast.type==="error" ? "#f87171" : "#c8f55a",
-          padding:"11px 18px", borderRadius:4, fontSize:13,
-          animation:"toastIn .22s ease",
-          boxShadow:"0 8px 28px rgba(0,0,0,.5)",
-        }}>
+        <div style={{ position:"fixed", bottom:24, right:24, zIndex:500, background:"#161616", border:`1px solid ${toast.type==="error"?"rgba(248,113,113,.3)":"rgba(200,245,90,.22)"}`, color:toast.type==="error"?"#f87171":"#c8f55a", padding:"11px 18px", borderRadius:4, fontSize:13, animation:"toastIn .22s ease", boxShadow:"0 8px 28px rgba(0,0,0,.5)" }}>
           {toast.msg}
         </div>
       )}
