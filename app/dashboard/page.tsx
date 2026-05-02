@@ -637,6 +637,30 @@ export default function Dashboard() {
               ))}
             </div>
 
+            {/* ══ AUTOMATION STATUS ══ */}
+            <div style={{
+              display:"flex", alignItems:"center", justifyContent:"space-between",
+              padding:"14px 20px",
+              background:"rgba(200,245,90,.04)",
+              border:"1px solid rgba(200,245,90,.15)",
+              borderRadius:4, marginBottom:20,
+              flexWrap:"wrap", gap:12,
+            }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <div className="pulse-dot" style={{ background:"#c8f55a" }}/>
+                <span style={{ fontSize:13, color:"#c8f55a", fontWeight:500 }}>Auto reminders active</span>
+                <span style={{ fontSize:12, color:"rgba(236,236,236,.3)" }}>· Runs every morning at 9:30 AM</span>
+              </div>
+              <div style={{ display:"flex", gap:20 }}>
+                <span style={{ fontSize:12, color:"rgba(236,236,236,.35)" }}>
+                  Next run: <span style={{ color:"rgba(236,236,236,.6)" }}>Tomorrow 9:30 AM</span>
+                </span>
+                <span style={{ fontSize:12, color:"rgba(236,236,236,.35)" }}>
+                  Watching: <span style={{ color:"rgba(236,236,236,.6)" }}>{customers.length} customers</span>
+                </span>
+              </div>
+            </div>
+
             {/* ══ RECOVERY BAR ══ */}
             <div className="section-card" style={{ marginBottom:20 }}>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
