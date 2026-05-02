@@ -367,7 +367,7 @@ export default function Home() {
           <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
             <div className="live-dot"/>
             <span style={{ fontSize:11, letterSpacing:".08em", textTransform:"uppercase", color:"rgba(236,236,236,.3)" }}>
-              Live automation log
+              Demo preview
             </span>
           </div>
 
@@ -377,7 +377,7 @@ export default function Home() {
             background:"rgba(255,255,255,.02)", borderRadius:4,
           }}>
             <p style={{ fontSize:10, letterSpacing:".1em", textTransform:"uppercase", color:"rgba(236,236,236,.25)", marginBottom:20 }}>
-              Today · 3 May 2026 · Automatic run
+              Demo · Your real data appears after login
             </p>
             {AUTOMATION_FLOW.map((step, i) => (
               <div key={i} style={{
