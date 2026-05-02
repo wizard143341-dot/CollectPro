@@ -48,7 +48,7 @@ const FEATURES = [
 ];
 
 const AUTOMATION_FLOW = [
-  { time:"9:30 AM", event:"System checks all customers", color:"rgba(236,236,236,.3)", dot:"rgba(236,236,236,.2)" },
+  { time:"9:30 AM", event:"System checks all customers", color:"#c8f55a", dot:"#c8f55a" },
   { time:"9:31 AM", event:"Finds customers due today or in 2 days", color:"#fbbf24", dot:"#fbbf24" },
   { time:"9:31 AM", event:"WhatsApp message auto-generated", color:"#818cf8", dot:"#818cf8" },
   { time:"9:32 AM", event:"Reminder sent to customer", color:"#c8f55a", dot:"#c8f55a" },
@@ -467,7 +467,7 @@ export default function Home() {
         </div>
         <div className="how-grid" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:40 }}>
           {[
-            { n:"1", title:"Add your customers", body:"Name, phone, amount, billing cycle. Done in 30 seconds per customer.", auto:false },
+            { n:"1", title:"Add your customers", body:"Name, phone, amount, billing cycle. Done in 30 seconds per customer.", auto:true },
             { n:"2", title:"System takes over", body:"Every morning at 9:30 AM, CollectPro automatically checks who is due.", auto:true },
             { n:"3", title:"Reminders go out", body:"WhatsApp messages sent automatically — before due date and when overdue.", auto:true },
             { n:"4", title:"Mark paid. Repeat.", body:"Next cycle starts automatically. Due date resets. System keeps running.", auto:true },
