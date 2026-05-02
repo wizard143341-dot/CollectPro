@@ -46,12 +46,12 @@ const FEATURES = [
     body:"Set weekly, monthly, quarterly or yearly cycles. Next due date auto-calculates the moment a payment is marked paid.",
   },
   {
-    n:"03", title:"Smart reminder engine",
-    body:"Different messages before, on, and after the due date. Polite before. Firm after. Always professional.",
+    n:"03", title:"Automatic daily reminders",
+    body:"Every morning, reminders go out automatically to customers due today or in 2 days. No manual work. Ever.",
   },
   {
     n:"04", title:"One-tap WhatsApp reminders",
-    body:"Pre-written message opens in WhatsApp with the customer's number pre-filled. One tap to send.",
+    body:"Manual reminder? One tap. Automatic reminder? Already sent. Either way — customer gets the message.",
   },
   {
     n:"05", title:"Payment history per customer",
