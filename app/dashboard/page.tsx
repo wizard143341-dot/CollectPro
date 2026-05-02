@@ -535,6 +535,15 @@ export default function Dashboard() {
         </div>
 
         <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+          <div style={{
+            display:"flex", alignItems:"center", gap:6,
+            padding:"6px 12px",
+            background:"rgba(200,245,90,.08)", border:"1px solid rgba(200,245,90,.15)",
+            borderRadius:2, fontSize:12, color:"#c8f55a",
+          }}>
+            <div className="pulse-dot" style={{ background:"#c8f55a" }}/>
+            Auto reminders on
+          </div>
           {overdueList.length > 0 && (
             <div style={{
               display:"flex", alignItems:"center", gap:6,
