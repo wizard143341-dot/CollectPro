@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createClient } from "./lib/supabase";
 
 const FEATURES = [
   {
@@ -148,6 +149,15 @@ function useScrollReveal() {
 
 export default function Home() {
   const scrolled = useNavScroll();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setIsLoggedIn(!!session);
+    });
+  }, []);
+
   useScrollReveal();
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -291,9 +301,15 @@ export default function Home() {
           <a href="/dashboard" className="btn-ghost desktop-nav" style={{ padding:"10px 24px", fontSize:13 }}>
             Login
           </a>
-          <a href="/dashboard" className="btn-primary" style={{ padding:"10px 24px", fontSize:13, textDecoration:"none" }}>
-            Start free
-          </a>
+          {isLoggedIn ? (
+            <a href="/dashboard" className="btn-primary" style={{ padding:"10px 24px", fontSize:13, textDecoration:"none" }}>
+              Go to Dashboard
+            </a>
+          ) : (
+            <a href="/login" className="btn-primary" style={{ padding:"10px 24px", fontSize:13, textDecoration:"none" }}>
+              Start free
+            </a>
+          )}
           <button className="mob-toggle" onClick={() => setMenuOpen(o=>!o)}
             style={{ display:"none", flexDirection:"column", gap:5, background:"none", border:"none", cursor:"pointer", padding:4 }}>
             {[0,1,2].map(i => <span key={i} style={{ display:"block", width:24, height:2, background:"rgba(236,236,236,.6)", borderRadius:2 }}/>)}
@@ -348,9 +364,15 @@ export default function Home() {
               CollectPro automatically sends WhatsApp reminders to your customers before and after every due date. Add customers once — automation handles the rest.
             </p>
             <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
-              <a href="/dashboard" className="btn-primary" style={{ textDecoration:"none", fontSize:15, padding:"15px 36px" }}>
-                Start free — 5 min setup
-              </a>
+              {isLoggedIn ? (
+                <a href="/dashboard" className="btn-primary" style={{ textDecoration:"none", fontSize:15, padding:"15px 36px" }}>
+                  Go to Dashboard →
+                </a>
+              ) : (
+                <a href="/login" className="btn-primary" style={{ textDecoration:"none", fontSize:15, padding:"15px 36px" }}>
+                  Start free — 5 min setup
+                </a>
+              )}
             </div>
           </div>
           <p style={{ fontSize:12, color:"rgba(236,236,236,.16)", letterSpacing:".04em" }}>
