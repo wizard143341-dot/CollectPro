@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { createClient } from "../lib/supabase";
+import { createClient } from "./lib/supabase";
 
 const FEATURES = [
   {
