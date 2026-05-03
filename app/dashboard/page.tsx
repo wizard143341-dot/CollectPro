@@ -14,6 +14,7 @@ interface Customer {
   id: string; name: string; phone: string; amount: number;
   billingCycle: BillingCycle; lastPaymentDate: string | null;
   nextDueDate: string; status: Status; note: string; paymentHistory: Payment[];
+  lastReminderSent: string | null;
 }
 type FormData = { name: string; phone: string; amount: string; billingCycle: BillingCycle; nextDueDate: string; note: string; };
 
@@ -29,6 +30,7 @@ const todayStr = () => new Date().toISOString().split("T")[0];
 const uid     = () => Math.random().toString(36).slice(2, 9);
 const fmt     = (n: number) => "₹" + n.toLocaleString("en-IN");
 const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"2-digit" });
+const fmtDateTime = (d: string) => new Date(d).toLocaleDateString("en-IN", { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" });
 
 const calcStatus = (nextDueDate: string): Status => {
   const diff = (new Date(nextDueDate).setHours(0,0,0,0) - new Date().setHours(0,0,0,0)) / 86400000;
@@ -67,6 +69,7 @@ const rowToCustomer = (row: any): Customer => ({
   billingCycle: row.billing_cycle as BillingCycle, lastPaymentDate: row.last_payment_date ?? null,
   nextDueDate: row.next_due_date, status: calcStatus(row.next_due_date),
   note: row.note ?? "", paymentHistory: Array.isArray(row.payment_history) ? row.payment_history : [],
+  lastReminderSent: row.last_reminder_sent ?? null,
 });
 
 interface FieldProps {
@@ -467,6 +470,7 @@ export default function Dashboard() {
                           <div>
                             <p style={{ fontSize:14, fontWeight:500, marginBottom:2 }}>{c.name}</p>
                             <p style={{ fontSize:12, color:"#f87171" }}>{d} day{d!==1?"s":""} overdue · {fmt(c.amount)}</p>
+                            {c.lastReminderSent && <p style={{ fontSize:10, color:"#c8f55a", marginTop:3 }}>✓ Auto reminder sent {fmtDateTime(c.lastReminderSent)}</p>}
                             {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.28)", fontStyle:"italic" }}>{c.note}</p>}
                           </div>
                           <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
@@ -494,6 +498,7 @@ export default function Dashboard() {
                           <div>
                             <p style={{ fontSize:14, fontWeight:500, marginBottom:2 }}>{c.name}</p>
                             <p style={{ fontSize:12, color:"#818cf8" }}>{label} · {fmt(c.amount)}</p>
+                            {c.lastReminderSent && <p style={{ fontSize:10, color:"#c8f55a", marginTop:3 }}>✓ Auto reminder sent {fmtDateTime(c.lastReminderSent)}</p>}
                             {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.28)", fontStyle:"italic" }}>{c.note}</p>}
                           </div>
                           <div style={{ display:"flex", gap:6 }}>
@@ -524,7 +529,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Desktop table */}
                 <div style={{ border:"1px solid rgba(236,236,236,.07)", borderRadius:4, overflow:"hidden" }}>
                   <div className="table-header" style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1.1fr 0.9fr 0.8fr 0.9fr 180px", padding:"10px 18px", background:"rgba(255,255,255,.025)", borderBottom:"1px solid rgba(236,236,236,.07)" }}>
                     <button className="th-btn" onClick={()=>toggleSort("name")}>Name <SortArrow active={sortKey==="name"} asc={sortAsc}/></button>
@@ -557,6 +561,7 @@ export default function Dashboard() {
                           <div>
                             <p style={{ fontSize:14, fontWeight:400, marginBottom:2 }}>{c.name}</p>
                             <p style={{ fontSize:11, color:"rgba(236,236,236,.28)" }}>{c.phone}</p>
+                            {c.lastReminderSent && <p style={{ fontSize:10, color:"#c8f55a", marginTop:2 }}>✓ Reminded {fmtDateTime(c.lastReminderSent)}</p>}
                             {c.note && <p style={{ fontSize:11, color:"rgba(236,236,236,.2)", fontStyle:"italic", marginTop:1 }}>{c.note}</p>}
                           </div>
                           <span style={{ fontSize:14, fontWeight:500 }}>{fmt(c.amount)}</span>
@@ -584,6 +589,7 @@ export default function Dashboard() {
                             <div>
                               <p style={{ fontSize:14, fontWeight:500, marginBottom:2 }}>{c.name}</p>
                               <p style={{ fontSize:11, color:"rgba(236,236,236,.28)" }}>{c.phone}</p>
+                              {c.lastReminderSent && <p style={{ fontSize:10, color:"#c8f55a", marginTop:2 }}>✓ Reminded {fmtDateTime(c.lastReminderSent)}</p>}
                             </div>
                             <span style={{ display:"inline-block", padding:"3px 9px", background:ss.bg, color:ss.color, border:`1px solid ${ss.border}`, fontSize:11, fontWeight:500, borderRadius:2 }}>{ss.label}</span>
                           </div>
