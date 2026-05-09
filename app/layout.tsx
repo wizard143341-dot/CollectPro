@@ -15,10 +15,10 @@ const geistMono = Geist_Mono({
 export const metadata = {
   title: "CollectPro — Automated Payment Recovery for Indian Businesses",
   description: "Track recurring dues, send automatic WhatsApp reminders, and recover payments. Built for gyms, coaching classes, clinics and Indian businesses.",
-  icons: {
-    icon: "/favicon.ico",
-    apple: "/apple-touch-icon.png",
-  },
+ icons: {
+  icon: "/favicon-32x32.png",
+  apple: "/apple-touch-icon.png",
+},
 };
 
 export default function RootLayout({
